@@ -4,6 +4,50 @@ import { NextRequest, NextResponse } from "next/server";
 // plus the entry notice and SEO corrections below.
 const ORIGIN = "https://omotenashitcg.com";
 
+// ── Branch admin config ──────────────────────────────────────────────
+// Admin-managed data (product overrides, payment methods, settings) lives
+// in Postgres and is served by /api/branch-config (Node.js runtime — the
+// Edge middleware cannot import `pg` directly). Fetched once per request
+// at most, cached 60s in memory. Fail-open: any error → defaults.
+interface BranchConfig {
+  overrides: Array<{ handle: string; title: string | null; price_cents: number | null; compare_price_cents: number | null; description: string | null; badge: string | null; hidden: boolean }>;
+  branchProducts: Array<{ id: number; handle: string; title: string; price_cents: number; compare_price_cents: number | null; description: string | null; image_url: string | null; badge: string | null; active: boolean }>;
+  payments: Array<{ key: string; name: string; enabled: boolean; details: string | null; sort_order: number }>;
+  settings: Record<string, string>;
+}
+const DEFAULT_CONFIG: BranchConfig = { overrides: [], branchProducts: [], payments: [], settings: {} };
+let cfgCache: { at: number; cfg: BranchConfig } | null = null;
+async function getBranchConfig(req: NextRequest): Promise<BranchConfig> {
+  if (cfgCache && Date.now() - cfgCache.at < 60000) return cfgCache.cfg;
+  try {
+    const proto = req.headers.get("x-forwarded-proto") || "https";
+    const host = req.headers.get("host") || "omotenashitcgjapan.com";
+    const r = await fetch(`${proto}://${host}/api/branch-config`, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (r.ok) {
+      const cfg = (await r.json()) as BranchConfig;
+      cfgCache = { at: Date.now(), cfg };
+      return cfg;
+    }
+  } catch { /* fail-open */ }
+  return cfgCache?.cfg ?? DEFAULT_CONFIG;
+}
+// Enabled payment method display names, in admin sort order.
+// Falls back to the built-in list when the DB has no methods configured.
+function enabledMethods(cfg: BranchConfig): string[] {
+  const names = cfg.payments.filter((p) => p.enabled).sort((a, b) => a.sort_order - b.sort_order).map((p) => p.name);
+  return names.length ? names : ["Wise", "CashApp", "Credit Card", "Bank Transfer", "Chime", "PayPal"];
+}
+// WhatsApp number from settings (digits only). Falls back to the built-in number.
+function waNumber(cfg: BranchConfig): string {
+  const raw = cfg.settings.whatsapp_number || "";
+  const digits = raw.replace(/\D/g, "");
+  return digits || "18179694115";
+}
+
+
 
 // Hero slideshow "Order Now" buttons: every product slide gets an overlay
 // button that adds the product to cart and jumps straight to the order page.
@@ -572,15 +616,14 @@ function removeFollowOnShop(html: string): string {
   );
 }
 
-function replacePaymentLists(html: string): string {
+function replacePaymentLists(html: string, methods?: string[]): string {
+  const badges = (methods ?? ["Wise", "CashApp", "Credit Card", "Bank Transfer", "Chime", "PayPal"])
+    .map((m) => PAY_BADGE_MAP[m] || "").join("");
   return html.replace(
     /(<div[^>]*class="[^"]*payment-list[^"]*"[^>]*>)[\s\S]*?(<\/div>)/g,
-    (_m, open, close) => open + PAY_BADGES + close
+    (_m, open, close) => open + badges + close
   );
 }
-
-const WA_NUMBER = "18179694115";
-const WA_METHODS = ["Wise", "CashApp", "Credit Card", "Bank Transfer", "Chime", "PayPal"];
 // Branch payment badges: real brand artwork for Wise, Cash App and Chime;
 // generic marks for Credit Card and Bank Transfer (no brands exist).
 const PAY_BADGE_MAP: Record<string, string> = {
@@ -592,8 +635,6 @@ const PAY_BADGE_MAP: Record<string, string> = {
 
     "PayPal": `<svg class="payment-list__item" width="38" height="24" viewBox="0 0 38 24" role="img" aria-label="PayPal"><rect x="0.5" y="0.5" width="37" height="23" rx="4" fill="#ffffff" stroke="#d9d9d9"/><g transform="translate(10,3) scale(0.75)" fill="#003087"><path d="M15.607 4.653H8.941L6.645 19.251H1.82L4.862 0h7.995c3.754 0 6.375 2.294 6.473 5.513-.648-.478-2.105-.86-3.722-.86m6.57 5.546c0 3.41-3.01 6.853-6.958 6.853h-2.493L11.595 24H6.74l1.845-11.538h3.592c4.208 0 7.346-3.634 7.153-6.949a5.24 5.24 0 0 1 2.848 4.686M9.653 5.546h6.408c.907 0 1.942.222 2.363.541-.195 2.741-2.655 5.483-6.441 5.483H8.714Z"/></g></svg>`,
 };
-const PAY_BADGES = WA_METHODS.map((m) => PAY_BADGE_MAP[m] || "").join("");
-
 function waMoney(cents: number): string {
   return "$" + (cents / 100).toFixed(2);
 }
@@ -605,7 +646,10 @@ function waEscapeHtml(s: string): string {
 // Server-side safety net: ANY attempt to reach Shopify checkout on the branch
 // (typed URL, missed button, express-checkout redirect, cached page) lands here
 // instead — a payment-method picker that sends the order to WhatsApp.
-async function checkoutPicker(req: NextRequest): Promise<NextResponse> {
+async function checkoutPicker(req: NextRequest, cfg?: BranchConfig): Promise<NextResponse> {
+  const config = cfg ?? (await getBranchConfig(req));
+  const METHODS = enabledMethods(config);
+  const NUMBER = waNumber(config);
   let cart: any = null;
   try {
     const r = await fetchWithTimeout(
@@ -635,11 +679,11 @@ async function checkoutPicker(req: NextRequest): Promise<NextResponse> {
     lines.join("\n") +
     `\n--------------------------\n*Total: ${waMoney(cart.total_price)}*`;
   const links: Record<string, string> = {};
-  for (const m of WA_METHODS) {
+  for (const m of METHODS) {
     const msg = base + `\n*Payment method: ${m}*\n\nName: __NAME__\nPhone: __PHONE__\nDelivery address: __ADDR__`;
-    links[m] = `https://wa.me/${WA_NUMBER}?text=${encodeURIComponent(msg)}`;
+    links[m] = `https://wa.me/${NUMBER}?text=${encodeURIComponent(msg)}`;
   }
-  const buttons = WA_METHODS.map(
+  const buttons = METHODS.map(
     (m) => `<button type="button" class="omjpn-m" data-m="${m}"><span class="omjpn-m-logo">${PAY_BADGE_MAP[m] || ""}</span><span>${m}</span></button>`
   ).join("");
   const summary = items
@@ -829,8 +873,79 @@ async function fetchWithTimeout(url: string, init: RequestInit, ms: number): Pro
   }
 }
 
+// ── Admin product overrides ────────────────────────────────────────────
+// Applies admin-managed product overrides to mirrored HTML:
+//  - title / price / description replaced on product pages
+//  - badge injected (e.g. SALE, PRE-ORDER)
+//  - hidden products removed from listing grids
+// Also serves branch-exclusive products (stored in the admin DB, not on Shopify)
+// as standalone pages with a WhatsApp order button.
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function applyProductOverrides(html: string, cfg: BranchConfig, pathname: string): string {
+  if (!cfg.overrides.length) return html;
+  // Product page: /products/{handle}
+  const pageMatch = pathname.match(/^\/products\/([a-z0-9\-]+)/i);
+  if (pageMatch) {
+    const ov = cfg.overrides.find((o) => o.handle.toLowerCase() === pageMatch[1].toLowerCase());
+    if (ov) {
+      if (ov.title) {
+        html = html.replace(/(<h1[^>]*>)([\s\S]*?)(<\/h1>)/i, `$1${escHtml(ov.title)}$3`);
+        html = html.replace(/(<title>)([\s\S]*?)(<\/title>)/i, `$1${escHtml(ov.title)}$3`);
+      }
+      if (ov.price_cents != null) {
+        const priceStr = "$" + (ov.price_cents / 100).toFixed(2);
+        html = html.replace(/(<span[^>]*class="[^"]*price[^"]*"[^>]*>)([\s\S]*?)(<\/span>)/i, `$1${priceStr}$3`);
+      }
+      if (ov.description) {
+        html = html.replace(/(<meta[^>]*name="description"[^>]*content=")[^"]*(")/i, `$1${escHtml(ov.description)}$2`);
+      }
+      if (ov.badge) {
+        const badgeHtml = `<span class="omjpn-admin-badge" style="display:inline-block;background:#e63946;color:#fff;font-weight:800;font-size:12px;padding:4px 10px;border-radius:999px;margin-bottom:8px;">${escHtml(ov.badge)}</span>`;
+        html = html.replace(/(<h1[^>]*>)/i, badgeHtml + "$1");
+      }
+    }
+    return html;
+  }
+  // Listing pages: remove hidden products, replace titles/prices in cards.
+  for (const ov of cfg.overrides) {
+    if (ov.hidden) {
+      // Remove product cards linking to this handle.
+      html = html.replace(
+        new RegExp(`<[^>]*href="\\/products\\/${ov.handle.replace(/[-/\\^$*+?.()|[\\]{}]/g, "\\$&")}"[^>]*>[\\s\\S]*?<\\/[^>]+>`, "gi"),
+        ""
+      );
+    }
+  }
+  return html;
+}
+
+// Standalone page for a branch-exclusive product (not on Shopify).
+function branchProductPage(p: BranchConfig["branchProducts"][number], cfg: BranchConfig): string {
+  const price = "$" + (p.price_cents / 100).toFixed(2);
+  const compare = p.compare_price_cents != null ? `<span style="text-decoration:line-through;color:#888;margin-left:8px;">$${(p.compare_price_cents / 100).toFixed(2)}</span>` : "";
+  const badge = p.badge ? `<span style="display:inline-block;background:#e63946;color:#fff;font-weight:800;font-size:12px;padding:4px 10px;border-radius:999px;margin-bottom:10px;">${escHtml(p.badge)}</span>` : "";
+  const img = p.image_url ? `<img src="${escHtml(p.image_url)}" alt="${escHtml(p.title)}" style="width:100%;max-width:520px;border-radius:10px;display:block;margin:0 auto 20px;">` : "";
+  const num = waNumber(cfg);
+  const msg = encodeURIComponent(`Hi! I'd like to order:\n\n${p.title}\nPrice: ${price}\n\nName:\nPhone:\nDelivery address:`);
+  const waLink = `https://wa.me/${num}?text=${msg}`;
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escHtml(p.title)} — Omotenashi TCG Japan Branch</title><style>body{margin:0;background:#f6f6f6;font-family:Barlow,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#141414}.wrap{max-width:560px;margin:0 auto;padding:28px 20px 40px}.card{background:#fff;border-radius:12px;padding:26px 22px}.card h1{font-size:24px;margin:0 0 8px}.price{font-size:20px;font-weight:800;margin:0 0 14px}.desc{font-size:14.5px;line-height:1.6;color:#444;margin:0 0 20px}.btn{display:block;text-align:center;background:#25D366;color:#fff;font-weight:800;font-size:16px;padding:14px;border-radius:999px;text-decoration:none}.back{display:block;text-align:center;margin-top:16px;color:#666;font-size:13.5px}</style></head><body><div class="wrap"><div class="card">${img}${badge}<h1>${escHtml(p.title)}</h1><p class="price">${price}${compare}</p>${p.description ? `<p class="desc">${escHtml(p.description)}</p>` : ""}<a class="btn" href="${waLink}" target="_blank" rel="noopener">Order via WhatsApp</a><a class="back" href="/">← Back to store</a></div></div></body></html>`;
+}
+
 export async function middleware(req: NextRequest) {
   const url = req.nextUrl;
+
+  // Admin panel + admin API are served locally by Next.js — never proxy to Shopify.
+  if (
+    url.pathname === "/admin" ||
+    url.pathname.startsWith("/admin/") ||
+    url.pathname.startsWith("/api/admin") ||
+    url.pathname === "/api/branch-config"
+  ) {
+    return NextResponse.next();
+  }
+
   const target = `${ORIGIN}${url.pathname}${url.search}`;
 
   const fwd = new Headers();
@@ -842,6 +957,23 @@ export async function middleware(req: NextRequest) {
   const ua = req.headers.get("user-agent") || "";
   const isBot = CRAWLER_UA.test(ua);
   const host = req.headers.get("host") || "omotenashi-jp-branch-ibravra.vercel.app";
+
+  // Branch admin config (cached 60s) — drives payment methods, WhatsApp
+  // number, notice text, product overrides, branch products.
+  const cfg = await getBranchConfig(req);
+
+  // Branch-exclusive product page (not on Shopify — served by the branch).
+  const branchMatch = url.pathname.match(/^\/products\/([a-z0-9\-]+)\/?$/i);
+  if (branchMatch) {
+    const bp = cfg.branchProducts.find(
+      (p) => p.active && p.handle.toLowerCase() === branchMatch[1].toLowerCase()
+    );
+    if (bp) {
+      return new NextResponse(branchProductPage(bp, cfg), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+  }
 
   // Crawler discovery files — branch-specific.
   if (url.pathname === "/robots.txt") {
@@ -863,7 +995,7 @@ export async function middleware(req: NextRequest) {
   // No automatic checkout on the branch — every checkout attempt becomes
   // the WhatsApp payment-method picker.
   if (url.pathname === "/checkout" || url.pathname.startsWith("/checkout/")) {
-    return checkoutPicker(req);
+    return checkoutPicker(req, cfg);
   }
 
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
@@ -898,7 +1030,7 @@ export async function middleware(req: NextRequest) {
       `https://${host}`
     );
     if (loc.includes("/checkout") || loc.includes("checkout.shopify.com")) {
-      return checkoutPicker(req);
+      return checkoutPicker(req, cfg);
     }
     const rHeaders = cleanHeaders(upstream.headers);
     if (loc !== rawLoc) rHeaders.set("location", loc);
@@ -930,7 +1062,7 @@ export async function middleware(req: NextRequest) {
             removeShopifyChat(
                 removeInboxChat(
                   removeKlaviyo(
-                      removeFollowOnShop(replacePaymentLists(seoFix(html, url.pathname)))
+                      removeFollowOnShop(replacePaymentLists(seoFix(html, url.pathname), enabledMethods(cfg)))
                     )
                   )
                 )
@@ -943,6 +1075,23 @@ export async function middleware(req: NextRequest) {
       ),
       url.pathname
     );
+    // Admin overrides: product title/price/description/badge/hide.
+    html = applyProductOverrides(html, cfg, url.pathname);
+    // Admin settings: WhatsApp number + notice text (applied to origin HTML).
+    const num = waNumber(cfg);
+    if (num !== "18179694115") html = html.split("18179694115").join(num);
+    if (cfg.settings.notice_en) {
+      html = html.replace(
+        /You are shopping at the <strong>Japanese branch<\/strong> of Omotenashi&nbsp;TCG here in Michigan, USA\./,
+        escHtml(cfg.settings.notice_en)
+      );
+    }
+    if (cfg.settings.notice_ja) {
+      html = html.replace(
+        /こちらはミシガン州にある <strong>Omotenashi TCG<\/strong> の日本支店です。/,
+        escHtml(cfg.settings.notice_ja)
+      );
+    }
     headers.append("Vary", "User-Agent");
     if (isBot) {
       // Static snapshot for crawlers: full content + SEO, no interactive overlays.
@@ -954,6 +1103,15 @@ export async function middleware(req: NextRequest) {
     } else {
       html += NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + HIDE_CSS;
     }
+    // Admin settings applied to injected scripts too (injected after the above).
+    // WhatsApp number everywhere (widget, checkout script, picker links).
+    if (num !== "18179694115") html = html.split("18179694115").join(num);
+    // Payment methods in the client-side checkout script.
+    const methods = enabledMethods(cfg);
+    html = html.replace(
+      /var METHODS = \[[^\]]*\];/,
+      `var METHODS = ${JSON.stringify(methods)};`
+    );
     return new NextResponse(html, { status: upstream.status, headers });
   }
 
