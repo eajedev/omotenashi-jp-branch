@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 interface Override {
   handle: string;
@@ -367,6 +367,35 @@ export default function ProductsClient({
   const [showBranchForm, setShowBranchForm] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Store catalog (Shopify origin products).
+  const [catalog, setCatalog] = useState<Array<{ handle: string; title: string; price_cents: number | null; image_url: string | null; hasOverride: boolean }>>([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [visibleCount, setVisibleCount] = useState(50);
+
+  async function loadCatalog() {
+    setCatalogLoading(true);
+    setCatalogError(null);
+    try {
+      const data = await api("/api/admin/products/catalog", "GET");
+      setCatalog(data.products ?? []);
+    } catch (err) {
+      setCatalogError(err instanceof Error ? err.message : "Catalog failed to load.");
+    } finally {
+      setCatalogLoading(false);
+    }
+  }
+
+  // Load catalog on mount.
+  useEffect(() => { loadCatalog(); }, []);
+
+  const filtered = catalog.filter((p) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return p.title.toLowerCase().includes(q) || p.handle.toLowerCase().includes(q);
+  });
+  const visible = filtered.slice(0, visibleCount);
 
   async function refresh() {
     try {
@@ -417,6 +446,102 @@ export default function ProductsClient({
       )}
 
       <div className="admin-card">
+        <h2>Store Products</h2>
+        <p style={{ color: "#666", marginTop: -6 }}>
+          All products from the Shopify store. Click Edit to change title,
+          price, description, badge, or hide a product.
+        </p>
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setVisibleCount(50); }}
+            placeholder="Search by title or handle…"
+            style={{ flex: 1 }}
+          />
+          <button className="admin-btn secondary" onClick={loadCatalog} disabled={catalogLoading}>
+            {catalogLoading ? "Loading…" : "Refresh"}
+          </button>
+        </div>
+        {catalogLoading ? (
+          <p className="admin-empty">Loading products…</p>
+        ) : catalogError ? (
+          <p className="admin-empty">{catalogError}</p>
+        ) : filtered.length === 0 ? (
+          <p className="admin-empty">No products match your search.</p>
+        ) : (
+          <>
+            <p style={{ color: "#666", fontSize: 13 }}>
+              Showing {visible.length} of {filtered.length} products ({catalog.length} total)
+            </p>
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 48 }}></th>
+                    <th>Title</th>
+                    <th>Price</th>
+                    <th>Override</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((p) => (
+                    <tr key={p.handle}>
+                      <td>
+                        {p.image_url ? (
+                          <img src={p.image_url} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4 }} />
+                        ) : (
+                          <span style={{ color: "#ccc" }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{p.title}</div>
+                        <div className="admin-mono" style={{ fontSize: 11, color: "#888" }}>{p.handle}</div>
+                      </td>
+                      <td>{fmtPrice(p.price_cents)}</td>
+                      <td>{p.hasOverride ? "Yes" : "No"}</td>
+                      <td>
+                        <button
+                          className="admin-btn secondary small"
+                          onClick={() => {
+                            // Open override form pre-filled with current values.
+                            const existing = overrides.find((o) => o.handle === p.handle);
+                            setEditingOverride(existing ?? {
+                              handle: p.handle,
+                              title: p.title,
+                              price_cents: p.price_cents,
+                              compare_price_cents: null,
+                              description: null,
+                              badge: null,
+                              hidden: false,
+                            });
+                            setShowOverrideForm(false);
+                            document.getElementById("overrides-card")?.scrollIntoView({ behavior: "smooth" });
+                          }}
+                        >
+                          Edit
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {visible.length < filtered.length && (
+              <button
+                className="admin-btn secondary"
+                style={{ marginTop: 12 }}
+                onClick={() => setVisibleCount((c) => c + 50)}
+              >
+                Load more ({filtered.length - visible.length} remaining)
+              </button>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="admin-card" id="overrides-card">
         <h2>Product Overrides</h2>
         <p style={{ color: "#666", marginTop: -6 }}>
           Override title, price, description, badge, or hide a product that
