@@ -344,6 +344,20 @@ const WA_SCRIPT = `<script>(function(){
   }, true);
 })();</scr` + `ipt>`;
 
+// Tawk.to live chat widget (user-supplied embed, Oct 17 2026).
+// Loads for human visitors only — bots get the static snapshot.
+const TAWK_SCRIPT = `<script type="text/javascript">
+var Tawk_API=Tawk_API||{}, Tawk_LoadStart=new Date();
+(function(){
+var s1=document.createElement("script"),s0=document.getElementsByTagName("script")[0];
+s1.async=true;
+s1.src='https://embed.tawk.to/6acbc308f5cc5c34c2fbb98f/default';
+s1.charset='UTF-8';
+s1.setAttribute('crossorigin','*');
+s0.parentNode.insertBefore(s1,s0);
+})();
+</scr` + `ipt>`;
+
 // user-directed removals: no "Buy with shop" button, no payment logos
 const HIDE_CSS = `<style>
 .shopify-payment-button,
@@ -1099,9 +1113,9 @@ export async function middleware(req: NextRequest) {
         html = html.replace("</body>", () => HIDE_CSS + "</body>");
       }
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", () => NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + HIDE_CSS + "</body>");
+      html = html.replace("</body>", () => NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + TAWK_SCRIPT + HIDE_CSS + "</body>");
     } else {
-      html += NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + HIDE_CSS;
+      html += NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + TAWK_SCRIPT + HIDE_CSS;
     }
     // Admin settings applied to injected scripts too (injected after the above).
     // WhatsApp number everywhere (widget, checkout script, picker links).
