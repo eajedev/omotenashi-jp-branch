@@ -344,14 +344,14 @@ const WA_SCRIPT = `<script>(function(){
   }, true);
 })();</scr` + `ipt>`;
 
-// Tawk.to live chat widget (user-supplied embed, Oct 17 2026).
+// Tawk.to live chat widget (user-supplied embed, updated Oct 18 2026).
 // Loads for human visitors only — bots get the static snapshot.
 const TAWK_SCRIPT = `<script type="text/javascript">
 var Tawk_API=Tawk_API||{}, Tawk_LoadStart=new Date();
 (function(){
 var s1=document.createElement("script"),s0=document.getElementsByTagName("script")[0];
 s1.async=true;
-s1.src='https://embed.tawk.to/6acbc308f5cc5c34c2fbb98f/default';
+s1.src='https://embed.tawk.to/6ad4640fa9ab9b34c646b152/1k56qdn9p';
 s1.charset='UTF-8';
 s1.setAttribute('crossorigin','*');
 s0.parentNode.insertBefore(s1,s0);
