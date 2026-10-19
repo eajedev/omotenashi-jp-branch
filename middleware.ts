@@ -34,6 +34,20 @@ async function getBranchConfig(req: NextRequest): Promise<BranchConfig> {
   } catch { /* fail-open */ }
   return cfgCache?.cfg ?? DEFAULT_CONFIG;
 }
+
+// ── Origin HTML cache ──────────────────────────────────────────────
+// Transformed HTML is cached per URL (separate bot/human variants) for
+// 60s. Without this, every page view = an origin fetch, and the asset
+// proxying multiplied it ~50x — which got our server IP rate-limited
+// (HTTP 429) by Shopify on Oct 19 2026 and took the branch down.
+// Stale entries are served when the origin errors, so a 429/5xx never
+// reaches the visitor as a broken page.
+const HTML_TTL_MS = 60000;
+interface HtmlCacheEntry { at: number; status: number; html: string; ctype: string }
+const htmlCache = new Map<string, HtmlCacheEntry>();
+function htmlCacheKey(isBot: boolean, pathname: string, search: string): string {
+  return (isBot ? "b:" : "h:") + pathname + search;
+}
 // Enabled payment method display names, in admin sort order.
 // Falls back to the built-in list when the DB has no methods configured.
 function enabledMethods(cfg: BranchConfig): string[] {
@@ -482,6 +496,14 @@ function seoFix(html: string, pathname: string): string {
 // rewritten to the branch host. The analytics "domain" key is intentionally
 // left untouched (it identifies the shop to Shopify's analytics).
 function rewriteBranchUrls(html: string, host: string): string {
+  // CDN assets STAY on the origin's CDN (browsers fetch images/CSS/JS
+  // directly from Shopify). Proxying every asset through this middleware
+  // multiplied our origin requests ~50x per page view and got our server
+  // IP rate-limited (HTTP 429) by Shopify — Oct 19 2026 outage.
+  // Protect /cdn/ URLs from the rewrites below.
+  const CDN_PH = "CDNPH0";
+  html = html.split("//omotenashitcg.com/cdn").join(CDN_PH);
+  html = html.split("\\/\\/omotenashitcg.com\\/cdn").join(CDN_PH);
   // Unescaped: https://, http://, protocol-relative //
   html = html.split("//omotenashitcg.com").join(`//${host}`);
   // Escaped inside JS strings: \/\/
@@ -489,6 +511,8 @@ function rewriteBranchUrls(html: string, host: string): string {
   // Bare domain in JSON strings ("pageurl":"omotenashitcg.com/...",
   // Shopify.cdnHost = "omotenashitcg.com/cdn") — but not "domain":"..."
   html = html.replace(/"omotenashitcg\.com(?!")/g, `"${host}`);
+  // Restore CDN URLs (still pointing at the origin's CDN).
+  html = html.split(CDN_PH).join("//omotenashitcg.com/cdn");
   return html;
 }
 
@@ -1019,6 +1043,29 @@ export async function middleware(req: NextRequest) {
   const hasBody = req.method !== "GET" && req.method !== "HEAD";
   const body = hasBody ? await req.arrayBuffer() : undefined;
 
+  // Serve fresh cached HTML without touching the origin (rate-limit protection).
+  const cacheKey = htmlCacheKey(isBot, url.pathname, url.search);
+  const canCache = req.method === "GET";
+  if (canCache) {
+    const hit = htmlCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < HTML_TTL_MS) {
+      const h = new Headers();
+      h.set("content-type", hit.ctype);
+      h.set("x-omjpn-cache", "hit");
+      h.append("Vary", "User-Agent");
+      return new NextResponse(hit.html, { status: hit.status, headers: h });
+    }
+  }
+  const staleOnError = (): NextResponse | null => {
+    const hit = htmlCache.get(cacheKey);
+    if (!hit) return null;
+    const h = new Headers();
+    h.set("content-type", hit.ctype);
+    h.set("x-omjpn-cache", "stale");
+    h.append("Vary", "User-Agent");
+    return new NextResponse(hit.html, { status: hit.status, headers: h });
+  };
+
   let upstream: Response;
   try {
     upstream = await fetchWithTimeout(
@@ -1032,9 +1079,21 @@ export async function middleware(req: NextRequest) {
       20000
     );
   } catch {
+    const stale = staleOnError();
+    if (stale) return stale;
     return new NextResponse(
       "Japan branch is temporarily unreachable. Please try again.",
       { status: 502 }
+    );
+  }
+
+  // Origin rate-limit / error: serve stale cache instead of a broken page.
+  if (upstream.status === 429 || upstream.status >= 500) {
+    const stale = staleOnError();
+    if (stale) return stale;
+    return new NextResponse(
+      "Japan branch is temporarily busy. Please try again in a moment.",
+      { status: 503, headers: { "retry-after": "30", "content-type": "text/plain; charset=utf-8" } }
     );
   }
 
@@ -1130,6 +1189,10 @@ export async function middleware(req: NextRequest) {
       /var METHODS = \[[^\]]*\];/,
       `var METHODS = ${JSON.stringify(methods)};`
     );
+    if (canCache && upstream.status === 200) {
+      if (htmlCache.size > 500) htmlCache.clear();
+      htmlCache.set(cacheKey, { at: Date.now(), status: 200, html, ctype: "text/html; charset=utf-8" });
+    }
     return new NextResponse(html, { status: upstream.status, headers });
   }
 
