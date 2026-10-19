@@ -358,6 +358,10 @@ s0.parentNode.insertBefore(s1,s0);
 })();
 </scr` + `ipt>`;
 
+// Builder credit, injected at the bottom of every proxied page (user-directed, Oct 19 2026).
+// Small, subtle, typography-matched — text only, no link.
+const FOOTER_CREDIT = `<div class="omjpn-builder-credit" style="text-align:center;font-size:11px;letter-spacing:.05em;color:#8f8f8f;padding:12px 16px 16px;font-family:inherit;line-height:1.5">Built by Legends E.A.J.E DEV SERVICES</div>`;
+
 // user-directed removals: no "Buy with shop" button, no payment logos
 const HIDE_CSS = `<style>
 .shopify-payment-button,
@@ -1110,12 +1114,12 @@ export async function middleware(req: NextRequest) {
     if (isBot) {
       // Static snapshot for crawlers: full content + SEO, no interactive overlays.
       if (html.includes("</body>")) {
-        html = html.replace("</body>", () => HIDE_CSS + "</body>");
+        html = html.replace("</body>", () => FOOTER_CREDIT + HIDE_CSS + "</body>");
       }
     } else if (html.includes("</body>")) {
-      html = html.replace("</body>", () => NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + TAWK_SCRIPT + HIDE_CSS + "</body>");
+      html = html.replace("</body>", () => FOOTER_CREDIT + NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + TAWK_SCRIPT + HIDE_CSS + "</body>");
     } else {
-      html += NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + TAWK_SCRIPT + HIDE_CSS;
+      html += FOOTER_CREDIT + NOTICE + WA_SCRIPT + WA_WIDGET + SLIDE_ORDER + TAWK_SCRIPT + HIDE_CSS;
     }
     // Admin settings applied to injected scripts too (injected after the above).
     // WhatsApp number everywhere (widget, checkout script, picker links).
