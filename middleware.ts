@@ -421,9 +421,11 @@ function seoFix(html: string, pathname: string): string {
   html = html.split("Japanes Trading Card Game Store").join("Japanese Trading Card Game Store");
 
   // 1b. Contact email (vendor-directed Nov 4 2026): the branch shows the
-  //     vendor's Gmail as THE contact email, replacing the origin's info@
-  //     address everywhere it appears (visible text + mailto links).
-  html = html.split("info@omotenashitcg.com").join("omotenshitcg@gmail.com");
+  //     professional address info@omotenashitcgjapan.com as THE contact
+  //     email, replacing the origin's info@ address everywhere it appears
+  //     (visible text + mailto links). Cloudflare Email Routing forwards
+  //     that address to the vendor's Gmail (omotenshitcg@gmail.com).
+  html = html.split("info@omotenashitcg.com").join("info@omotenashitcgjapan.com");
 
   // 2. Pages with no H1 (all collection pages, some info pages): inject a
   //    visually-hidden H1 derived from the page title. Invisible to visitors,
