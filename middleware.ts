@@ -420,6 +420,11 @@ function seoFix(html: string, pathname: string): string {
   // 1. Brand typo: "Japanes" -> "Japanese" (titles, og tags, JSON-LD)
   html = html.split("Japanes Trading Card Game Store").join("Japanese Trading Card Game Store");
 
+  // 1b. Contact email (vendor-directed Nov 4 2026): the branch shows the
+  //     vendor's Gmail as THE contact email, replacing the origin's info@
+  //     address everywhere it appears (visible text + mailto links).
+  html = html.split("info@omotenashitcg.com").join("omotenshitcg@gmail.com");
+
   // 2. Pages with no H1 (all collection pages, some info pages): inject a
   //    visually-hidden H1 derived from the page title. Invisible to visitors,
   //    visible to search engines and screen readers.
