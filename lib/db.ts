@@ -97,7 +97,7 @@ const PAYMENT_SEED: Array<{ key: string; name: string; sort_order: number }> = [
 ];
 
 const SETTINGS_SEED: Record<string, string> = {
-  whatsapp_number: "+18179694115",
+  whatsapp_number: "+18285643541",
   notice_en:
     "You are shopping at the Japanese branch of Omotenashi TCG here in Michigan, USA.",
   notice_ja:
